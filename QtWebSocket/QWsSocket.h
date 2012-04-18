@@ -20,6 +20,7 @@ public:
 		OpReserved3 = 0x5,
 		OpReserved4 = 0x6,
 		OpReserved5 = 0x7,
+		OpControl = 0x8,
 		OpClose = 0x8,
 		OpPing = 0x9,
 		OpPong = 0xA,
@@ -60,6 +61,11 @@ private slots:
 	// private func
 	void tcpSocketAboutToClose();
 	void tcpSocketDisconnected();
+
+private:
+	void handleControlOpcode(const QByteArray & data);
+	void handleMessage();
+
 private:
 	enum EState
 	{
@@ -77,7 +83,8 @@ private:
 	QTime pingTimer;
 
 	EState state;
-	EOpcode opcode;
+	EOpcode frameOpcode;
+	EOpcode messageOpcode;
 	bool isFinalFragment;
 	bool hasMask;
 	quint64 payloadLength;
@@ -87,7 +94,7 @@ public:
 	static QByteArray generateMaskingKey();
 	static QByteArray mask( QByteArray data, QByteArray maskingKey );
 	static QList<QByteArray> composeFrames( QByteArray byteArray, bool asBinary = false, int maxFrameBytes = 0 );
-	static QByteArray composeHeader( bool fin, EOpcode opcode, quint64 payloadLength, QByteArray maskingKey = QByteArray() );
+	static QByteArray composeHeader( bool fin, EOpcode frameOpcode, quint64 payloadLength, QByteArray maskingKey = QByteArray() );
 	static QString composeOpeningHandShake( QString ressourceName, QString host, QString origin, QString extensions, QString key );
 
 	// static vars

@@ -6,14 +6,15 @@ int QWsSocket::maxBytesPerFrame = 1400;
 
 QWsSocket::QWsSocket(QTcpSocket * socket, QObject * parent) :
 	QAbstractSocket( QAbstractSocket::UnknownSocketType, parent ),
+	tcpSocket(socket),
 	state(HeaderPending),
+	frameOpcode(OpContinue),
+	messageOpcode(OpContinue),
 	isFinalFragment(false),
 	hasMask(false),
 	payloadLength(0),
 	maskingKey(4, 0)
 {
-	tcpSocket = socket;
-
 	//setSocketState( QAbstractSocket::UnconnectedState );
 	setSocketState( socket->state() );
 
@@ -38,7 +39,10 @@ void QWsSocket::dataReceived()
 		char header[2];
 		tcpSocket->read(header, 2); // XXX: Handle return value
 		isFinalFragment = (header[0] & 0x80) != 0;
-		opcode = static_cast<EOpcode>(header[0] & 0x0F);
+		frameOpcode = static_cast<EOpcode>(header[0] & 0x0F);
+
+		if (!(frameOpcode & OpControl) && frameOpcode != OpContinue)
+			messageOpcode = frameOpcode;
 
 		// Mask, PayloadLength
 		hasMask = (header[1] & 0x80) != 0;
@@ -94,47 +98,91 @@ void QWsSocket::dataReceived()
 		if (tcpSocket->bytesAvailable() < static_cast<qint32>(payloadLength))
 			return;
 
+		state = HeaderPending;
+
 		// Extension // UNSUPPORTED FOR NOW
 		QByteArray ApplicationData = tcpSocket->read( payloadLength );
 		if ( hasMask )
 			ApplicationData = QWsSocket::mask( ApplicationData, maskingKey );
+
+		if (frameOpcode & OpControl)
+		{
+			handleControlOpcode(ApplicationData);
+			break;
+		}
 		currentFrame.append( ApplicationData );
 
-		state = HeaderPending;
-
-		if ( !isFinalFragment )
-			break;
-
-		// XXX: Consider switch/case instead
-		if ( opcode == OpBinary )
-		{
-			emit frameReceived( currentFrame );
-		}
-		else if ( opcode == OpText )
-		{
-			QString byteString;
-			byteString.reserve(currentFrame.size());
-			for (int i=0 ; i<currentFrame.size() ; i++)
-				byteString[i] = currentFrame[i];
-			emit frameReceived( byteString );
-		}
-		else if ( opcode == OpPing )
-		{
-			QByteArray pongRequest = QWsSocket::composeHeader( true, OpPong, 0 );
-			write( pongRequest );
-		}
-		else if ( opcode == OpPong )
-		{
-			quint64 ms = pingTimer.elapsed();
-			emit pong(ms);
-		}
-		else if ( opcode == OpClose )
-		{
-			tcpSocket->close();
-		}
-		currentFrame.clear();
-	}; break;
+		if (isFinalFragment)
+			handleMessage();
+	};
+	break;
 	} /* while (true) switch */
+}
+
+void QWsSocket::handleControlOpcode(const QByteArray &data)
+{
+	Q_UNUSED(data);
+
+	// According to http://tools.ietf.org/html/rfc6455#section-5.5
+	// all control frames MUST have a payload length of 125 bytes or less
+	if (payloadLength > 125)
+	{
+		close(); // TODO: Specify reason
+		return;
+	}
+
+	// ... and MUST NOT be fragmented
+	if (!isFinalFragment)
+	{
+		close(); // TODO: Specify reason
+		return;
+	}
+
+	switch (frameOpcode)
+	{
+	case OpPing:
+		// TODO: Pong back the payload
+		write(QWsSocket::composeHeader(true, OpPong, 0));
+		break;
+	case OpPong:
+		emit pong(pingTimer.elapsed());
+		break;
+	case OpClose:
+		tcpSocket->close();
+		break;
+	case OpReserved6:
+	case OpReserved7:
+	case OpReserved8:
+	case OpReserved9:
+	case OpReserved10:
+		close(); // TODO: Specify reason
+		break;
+	default:
+		qDebug("Unexpected non-control opcode 0x%x within control opcode handling routine", frameOpcode);
+		break;
+	}
+}
+
+void QWsSocket::handleMessage()
+{
+	switch (messageOpcode)
+	{
+	case OpBinary:
+		emit frameReceived( currentFrame );
+		break;
+	case OpText: {
+		QString byteString;
+		byteString.reserve(currentFrame.size());
+		for (int i=0 ; i<currentFrame.size() ; i++)
+			byteString[i] = currentFrame[i];
+		emit frameReceived( byteString );
+	}; break;
+	default:
+		qDebug("Unexpected non-control opcode 0x%x", messageOpcode);
+		break;
+	}
+
+	currentFrame.clear();
 }
 
 qint64 QWsSocket::write ( const QString & string, int maxFrameBytes )
