@@ -30,7 +30,8 @@ QWsSocket::~QWsSocket()
 
 void QWsSocket::dataReceived()
 {
-	while (true) switch (state) {
+	while (tcpSocket->state() == QAbstractSocket::ConnectedState)
+	switch (state) {
 	case HeaderPending: {
 		if (tcpSocket->bytesAvailable() < 2)
 			return;
@@ -41,8 +42,32 @@ void QWsSocket::dataReceived()
 		isFinalFragment = (header[0] & 0x80) != 0;
 		frameOpcode = static_cast<EOpcode>(header[0] & 0x0F);
 
-		if (!(frameOpcode & OpControl) && frameOpcode != OpContinue)
-			messageOpcode = frameOpcode;
+		if (!(frameOpcode & OpControl))
+		{
+			// See http://tools.ietf.org/html/rfc6455#section-5.4
+			// for framing rules
+			if (messageOpcode == OpContinue)
+			{
+				// Starting frame of a message
+				messageOpcode = frameOpcode;
+				if (messageOpcode == OpContinue)
+				{
+					// Message cannot start with a continuation opcode
+					close(); // TODO: Specify reason
+					break;
+				}
+			}
+			else
+			{
+				if (frameOpcode != OpContinue)
+				{
+					// Non-starting message frames MUST
+					// come with a continuation opcode
+					close(); // TODO: Specify reason
+					break;
+				}
+			}
+		}
 
 		// Mask, PayloadLength
 		hasMask = (header[1] & 0x80) != 0;
@@ -183,6 +208,7 @@ void QWsSocket::handleMessage()
 	}
 
 	currentFrame.clear();
+	messageOpcode = OpContinue;
 }
 
 qint64 QWsSocket::write ( const QString & string, int maxFrameBytes )
