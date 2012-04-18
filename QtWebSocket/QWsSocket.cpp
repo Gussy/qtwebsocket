@@ -146,8 +146,6 @@ void QWsSocket::dataReceived()
 
 void QWsSocket::handleControlOpcode(const QByteArray &data)
 {
-	Q_UNUSED(data);
-
 	// According to http://tools.ietf.org/html/rfc6455#section-5.5
 	// all control frames MUST have a payload length of 125 bytes or less
 	if (payloadLength > 125)
@@ -166,8 +164,8 @@ void QWsSocket::handleControlOpcode(const QByteArray &data)
 	switch (frameOpcode)
 	{
 	case OpPing:
-		// TODO: Pong back the payload
-		write(QWsSocket::composeHeader(true, OpPong, 0));
+		writeFrame(QWsSocket::composeHeader(true, OpPong, data.size()));
+		writeFrame(data);
 		break;
 	case OpPong:
 		emit pong(pingTimer.elapsed());
