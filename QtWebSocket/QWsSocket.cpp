@@ -202,6 +202,13 @@ void QWsSocket::handleMessage()
 			byteString[i] = currentFrame[i];
 		emit frameReceived( byteString );
 	}; break;
+	case OpReserved1:
+	case OpReserved2:
+	case OpReserved3:
+	case OpReserved4:
+	case OpReserved5:
+		close(); // TODO: Specify reason
+		break;
 	default:
 		qDebug("Unexpected non-control opcode 0x%x", messageOpcode);
 		break;
