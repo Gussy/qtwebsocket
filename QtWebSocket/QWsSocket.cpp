@@ -261,11 +261,15 @@ void QWsSocket::handleMessage()
 		emit frameReceived( currentFrame );
 		break;
 	case OpText: {
-		QString byteString;
-		byteString.reserve(currentFrame.size());
-		for (int i=0 ; i<currentFrame.size() ; i++)
-			byteString[i] = currentFrame[i];
-		emit frameReceived( byteString );
+		// Handle UTF-8 errors as per http://tools.ietf.org/html/rfc6455#section-8.1,
+		// i.e. close socket with an 1007 error code,
+		// see http://tools.ietf.org/html/rfc6455#section-7.4.1
+		bool ok;
+		QString text = fromUtf8(currentFrame.constData(), currentFrame.size(), &ok);
+		if (ok)
+			emit frameReceived(text);
+		else
+			close(DataInconsistent);
 	}; break;
 	case OpReserved1:
 	case OpReserved2:
