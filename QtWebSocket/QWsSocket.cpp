@@ -40,6 +40,17 @@ void QWsSocket::dataReceived()
 		char header[2];
 		tcpSocket->read(header, 2); // XXX: Handle return value
 		isFinalFragment = (header[0] & 0x80) != 0;
+		if ((header[0] & 0x70) != 0) // Check for RSV
+		{
+			// Since we don't support extensions yet
+			// and also informed client about that
+			// by omiting Sec-WebSocket-Extensions
+			// header in handshake response
+			// We MUST fail connection if any of RSV bits is set
+			// as per http://tools.ietf.org/html/rfc6455#section-5.2
+			close(); // TODO: Specify reason
+			break;
+		}
 		frameOpcode = static_cast<EOpcode>(header[0] & 0x0F);
 
 		if (!(frameOpcode & OpControl))
