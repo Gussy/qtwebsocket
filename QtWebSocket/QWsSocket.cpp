@@ -6,14 +6,15 @@ int QWsSocket::maxBytesPerFrame = 1400;
 
 QWsSocket::QWsSocket(QTcpSocket * socket, QObject * parent) :
 	QAbstractSocket( QAbstractSocket::UnknownSocketType, parent ),
+	tcpSocket(socket),
 	state(HeaderPending),
+	frameOpcode(OpContinue),
+	messageOpcode(OpContinue),
 	isFinalFragment(false),
 	hasMask(false),
 	payloadLength(0),
 	maskingKey(4, 0)
 {
-	tcpSocket = socket;
-
 	//setSocketState( QAbstractSocket::UnconnectedState );
 	setSocketState( socket->state() );
 
@@ -29,7 +30,8 @@ QWsSocket::~QWsSocket()
 
 void QWsSocket::dataReceived()
 {
-	while (true) switch (state) {
+	while (tcpSocket->state() == QAbstractSocket::ConnectedState)
+	switch (state) {
 	case HeaderPending: {
 		if (tcpSocket->bytesAvailable() < 2)
 			return;
@@ -38,10 +40,55 @@ void QWsSocket::dataReceived()
 		char header[2];
 		tcpSocket->read(header, 2); // XXX: Handle return value
 		isFinalFragment = (header[0] & 0x80) != 0;
-		opcode = static_cast<EOpcode>(header[0] & 0x0F);
+		if ((header[0] & 0x70) != 0) // Check for RSV
+		{
+			// Since we don't support extensions yet
+			// and also informed client about that
+			// by omiting Sec-WebSocket-Extensions
+			// header in handshake response
+			// We MUST fail connection if any of RSV bits is set
+			// as per http://tools.ietf.org/html/rfc6455#section-5.2
+			close(); // TODO: Specify reason
+			break;
+		}
+		frameOpcode = static_cast<EOpcode>(header[0] & 0x0F);
+
+		if (!(frameOpcode & OpControl))
+		{
+			// See http://tools.ietf.org/html/rfc6455#section-5.4
+			// for framing rules
+			if (messageOpcode == OpContinue)
+			{
+				// Starting frame of a message
+				messageOpcode = frameOpcode;
+				if (messageOpcode == OpContinue)
+				{
+					// Message cannot start with a continuation opcode
+					close(); // TODO: Specify reason
+					break;
+				}
+			}
+			else
+			{
+				if (frameOpcode != OpContinue)
+				{
+					// Non-starting message frames MUST
+					// come with a continuation opcode
+					close(); // TODO: Specify reason
+					break;
+				}
+			}
+		}
 
 		// Mask, PayloadLength
 		hasMask = (header[1] & 0x80) != 0;
+		// As per http://tools.ietf.org/html/rfc6455#section-5.1
+		// client MUST always mask its frames.
+		if (!hasMask)
+		{
+			close(); // TODO: Specify reason (1002)
+			break;
+		}
 		quint8 length = (header[1] & 0x7F);
 
 		switch (length) {
@@ -94,47 +141,97 @@ void QWsSocket::dataReceived()
 		if (tcpSocket->bytesAvailable() < static_cast<qint32>(payloadLength))
 			return;
 
+		state = HeaderPending;
+
 		// Extension // UNSUPPORTED FOR NOW
 		QByteArray ApplicationData = tcpSocket->read( payloadLength );
 		if ( hasMask )
 			ApplicationData = QWsSocket::mask( ApplicationData, maskingKey );
+
+		if (frameOpcode & OpControl)
+		{
+			handleControlOpcode(ApplicationData);
+			break;
+		}
 		currentFrame.append( ApplicationData );
 
-		state = HeaderPending;
-
-		if ( !isFinalFragment )
-			break;
-
-		// XXX: Consider switch/case instead
-		if ( opcode == OpBinary )
-		{
-			emit frameReceived( currentFrame );
-		}
-		else if ( opcode == OpText )
-		{
-			QString byteString;
-			byteString.reserve(currentFrame.size());
-			for (int i=0 ; i<currentFrame.size() ; i++)
-				byteString[i] = currentFrame[i];
-			emit frameReceived( byteString );
-		}
-		else if ( opcode == OpPing )
-		{
-			QByteArray pongRequest = QWsSocket::composeHeader( true, OpPong, 0 );
-			write( pongRequest );
-		}
-		else if ( opcode == OpPong )
-		{
-			quint64 ms = pingTimer.elapsed();
-			emit pong(ms);
-		}
-		else if ( opcode == OpClose )
-		{
-			tcpSocket->close();
-		}
-		currentFrame.clear();
-	}; break;
+		if (isFinalFragment)
+			handleMessage();
+	};
+	break;
 	} /* while (true) switch */
+}
+
+void QWsSocket::handleControlOpcode(const QByteArray &data)
+{
+	// According to http://tools.ietf.org/html/rfc6455#section-5.5
+	// all control frames MUST have a payload length of 125 bytes or less
+	if (payloadLength > 125)
+	{
+		close(); // TODO: Specify reason
+		return;
+	}
+
+	// ... and MUST NOT be fragmented
+	if (!isFinalFragment)
+	{
+		close(); // TODO: Specify reason
+		return;
+	}
+
+	switch (frameOpcode)
+	{
+	case OpPing:
+		writeFrame(QWsSocket::composeHeader(true, OpPong, data.size()));
+		writeFrame(data);
+		break;
+	case OpPong:
+		emit pong(pingTimer.elapsed());
+		break;
+	case OpClose:
+		tcpSocket->close();
+		break;
+	case OpReserved6:
+	case OpReserved7:
+	case OpReserved8:
+	case OpReserved9:
+	case OpReserved10:
+		close(); // TODO: Specify reason
+		break;
+	default:
+		qDebug("Unexpected non-control opcode 0x%x within control opcode handling routine", frameOpcode);
+		break;
+	}
+}
+
+void QWsSocket::handleMessage()
+{
+	switch (messageOpcode)
+	{
+	case OpBinary:
+		emit frameReceived( currentFrame );
+		break;
+	case OpText: {
+		QString byteString;
+		byteString.reserve(currentFrame.size());
+		for (int i=0 ; i<currentFrame.size() ; i++)
+			byteString[i] = currentFrame[i];
+		emit frameReceived( byteString );
+	}; break;
+	case OpReserved1:
+	case OpReserved2:
+	case OpReserved3:
+	case OpReserved4:
+	case OpReserved5:
+		close(); // TODO: Specify reason
+		break;
+	default:
+		qDebug("Unexpected non-control opcode 0x%x", messageOpcode);
+		break;
+	}
+
+	currentFrame.clear();
+	messageOpcode = OpContinue;
 }
 
 qint64 QWsSocket::write ( const QString & string, int maxFrameBytes )
@@ -174,7 +271,6 @@ void QWsSocket::close( QString reason )
 {
 	// Compose and send close frame
 	quint64 messageSize = reason.size();
-	QByteArray maskingKey = generateMaskingKey();
 	QByteArray BA;
 	quint8 byte;
 
@@ -226,7 +322,10 @@ QList<QByteArray> QWsSocket::composeFrames( QByteArray byteArray, bool asBinary,
 
 	QList<QByteArray> framesList;
 
-	QByteArray maskingKey = generateMaskingKey();
+	// As per http://tools.ietf.org/html/rfc6455#section-5.1
+	// server MUST NOT mask the payload,
+	// the earlier spec versions do not enforce that
+	// but they should work ok w/o masking as well.
 
 	int nbFrames = byteArray.size() / maxFrameBytes + 1;
 
@@ -252,14 +351,14 @@ QList<QByteArray> QWsSocket::composeFrames( QByteArray byteArray, bool asBinary,
 		}
 		
 		// Header
-		QByteArray header = QWsSocket::composeHeader( fin, opcode, size, maskingKey );
+		QByteArray header = QWsSocket::composeHeader(fin, opcode, size);
 		BA.append( header );
 		
 		// Application Data
+		// TODO: Use QByteArray::mid() instead of left/remove for performance's sake
 		QByteArray dataForThisFrame = byteArray.left( size );
 		byteArray.remove( 0, size );
 		
-		dataForThisFrame = QWsSocket::mask( dataForThisFrame, maskingKey );
 		BA.append( dataForThisFrame );
 		
 		framesList << BA;
@@ -300,6 +399,7 @@ QByteArray QWsSocket::composeHeader( bool fin, EOpcode opcode, quint64 payloadLe
 		if ( payloadLength <= 0xFFFF )
 		{
 			byte = ( byte | 126 );
+			// TODO: Use QtEndian instead
 			BAsize.append( ( payloadLength >> 1*8 ) & 0xFF );
 			BAsize.append( ( payloadLength >> 0*8 ) & 0xFF );
 		}
@@ -307,6 +407,7 @@ QByteArray QWsSocket::composeHeader( bool fin, EOpcode opcode, quint64 payloadLe
 		else if ( payloadLength <= 0x7FFFFFFF )
 		{
 			byte = ( byte | 127 );
+			// TODO: Use QtEndian instead
 			BAsize.append( ( payloadLength >> 7*8 ) & 0xFF );
 			BAsize.append( ( payloadLength >> 6*8 ) & 0xFF );
 			BAsize.append( ( payloadLength >> 5*8 ) & 0xFF );
