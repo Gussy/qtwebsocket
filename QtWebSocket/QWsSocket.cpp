@@ -71,6 +71,13 @@ void QWsSocket::dataReceived()
 
 		// Mask, PayloadLength
 		hasMask = (header[1] & 0x80) != 0;
+		// As per http://tools.ietf.org/html/rfc6455#section-5.1
+		// client MUST always mask its frames.
+		if (!hasMask)
+		{
+			close(); // TODO: Specify reason (1002)
+			break;
+		}
 		quint8 length = (header[1] & 0x7F);
 
 		switch (length) {
@@ -253,7 +260,6 @@ void QWsSocket::close( QString reason )
 {
 	// Compose and send close frame
 	quint64 messageSize = reason.size();
-	QByteArray maskingKey = generateMaskingKey();
 	QByteArray BA;
 	quint8 byte;
 
@@ -305,7 +311,10 @@ QList<QByteArray> QWsSocket::composeFrames( QByteArray byteArray, bool asBinary,
 
 	QList<QByteArray> framesList;
 
-	QByteArray maskingKey = generateMaskingKey();
+	// As per http://tools.ietf.org/html/rfc6455#section-5.1
+	// server MUST NOT mask the payload,
+	// the earlier spec versions do not enforce that
+	// but they should work ok w/o masking as well.
 
 	int nbFrames = byteArray.size() / maxFrameBytes + 1;
 
@@ -331,14 +340,14 @@ QList<QByteArray> QWsSocket::composeFrames( QByteArray byteArray, bool asBinary,
 		}
 		
 		// Header
-		QByteArray header = QWsSocket::composeHeader( fin, opcode, size, maskingKey );
+		QByteArray header = QWsSocket::composeHeader(fin, opcode, size);
 		BA.append( header );
 		
 		// Application Data
+		// TODO: Use QByteArray::mid() instead of left/remove for performance's sake
 		QByteArray dataForThisFrame = byteArray.left( size );
 		byteArray.remove( 0, size );
 		
-		dataForThisFrame = QWsSocket::mask( dataForThisFrame, maskingKey );
 		BA.append( dataForThisFrame );
 		
 		framesList << BA;
@@ -379,6 +388,7 @@ QByteArray QWsSocket::composeHeader( bool fin, EOpcode opcode, quint64 payloadLe
 		if ( payloadLength <= 0xFFFF )
 		{
 			byte = ( byte | 126 );
+			// TODO: Use QtEndian instead
 			BAsize.append( ( payloadLength >> 1*8 ) & 0xFF );
 			BAsize.append( ( payloadLength >> 0*8 ) & 0xFF );
 		}
@@ -386,6 +396,7 @@ QByteArray QWsSocket::composeHeader( bool fin, EOpcode opcode, quint64 payloadLe
 		else if ( payloadLength <= 0x7FFFFFFF )
 		{
 			byte = ( byte | 127 );
+			// TODO: Use QtEndian instead
 			BAsize.append( ( payloadLength >> 7*8 ) & 0xFF );
 			BAsize.append( ( payloadLength >> 6*8 ) & 0xFF );
 			BAsize.append( ( payloadLength >> 5*8 ) & 0xFF );
