@@ -1,6 +1,7 @@
 #include "QWsSocket.h"
 
 #include <QtEndian>
+#include <QTextCodec>
 
 int QWsSocket::maxBytesPerFrame = 1400;
 
@@ -48,7 +49,7 @@ void QWsSocket::dataReceived()
 			// header in handshake response
 			// We MUST fail connection if any of RSV bits is set
 			// as per http://tools.ietf.org/html/rfc6455#section-5.2
-			close(); // TODO: Specify reason
+			close(ProtocolError);
 			break;
 		}
 		frameOpcode = static_cast<EOpcode>(header[0] & 0x0F);
@@ -64,7 +65,7 @@ void QWsSocket::dataReceived()
 				if (messageOpcode == OpContinue)
 				{
 					// Message cannot start with a continuation opcode
-					close(); // TODO: Specify reason
+					close(ProtocolError);
 					break;
 				}
 			}
@@ -74,7 +75,7 @@ void QWsSocket::dataReceived()
 				{
 					// Non-starting message frames MUST
 					// come with a continuation opcode
-					close(); // TODO: Specify reason
+					close(ProtocolError);
 					break;
 				}
 			}
@@ -86,7 +87,7 @@ void QWsSocket::dataReceived()
 		// client MUST always mask its frames.
 		if (!hasMask)
 		{
-			close(); // TODO: Specify reason (1002)
+			close(ProtocolError);
 			break;
 		}
 		quint8 length = (header[1] & 0x7F);
@@ -168,14 +169,14 @@ void QWsSocket::handleControlOpcode(const QByteArray &data)
 	// all control frames MUST have a payload length of 125 bytes or less
 	if (payloadLength > 125)
 	{
-		close(); // TODO: Specify reason
+		close(ProtocolError);
 		return;
 	}
 
 	// ... and MUST NOT be fragmented
 	if (!isFinalFragment)
 	{
-		close(); // TODO: Specify reason
+		close(ProtocolError);
 		return;
 	}
 
@@ -189,19 +190,67 @@ void QWsSocket::handleControlOpcode(const QByteArray &data)
 		emit pong(pingTimer.elapsed());
 		break;
 	case OpClose:
-		tcpSocket->close();
+		handleClose(data);
 		break;
 	case OpReserved6:
 	case OpReserved7:
 	case OpReserved8:
 	case OpReserved9:
 	case OpReserved10:
-		close(); // TODO: Specify reason
+		close(ProtocolError);
 		break;
 	default:
 		qDebug("Unexpected non-control opcode 0x%x within control opcode handling routine", frameOpcode);
 		break;
 	}
+}
+
+void QWsSocket::handleClose(const QByteArray &data)
+{
+	switch (payloadLength)
+	{
+	case 0:
+		close(NormalClosure);
+		return;
+	case 1:
+		close(ProtocolError);
+		return;
+	default:
+		break;
+	}
+
+	const uchar * statusBuffer = reinterpret_cast<const uchar *>(data.constData());
+	quint16 status = qFromBigEndian<quint16>(statusBuffer);
+	switch (status)
+	{
+	case NormalClosure:
+	case GoingAway:
+	case ProtocolError:
+	case UnsupportedDataType:
+	case DataInconsistent:
+	case PolicyViolated:
+	case MessageTooBig:
+	case RequiredExtensionUnsupported:
+	// See https://groups.google.com/forum/?fromgroups#!topic/autobahnws/b5q9ux6DMcA
+	case InternalServerError: // Is not sent by client
+		break;
+	default:
+		if ((status <= StandardStatusReserveEnd)
+			|| (status > VendorStatusReserveEnd))
+		{
+			close(ProtocolError);
+			return;
+		}
+		break;
+	}
+
+	const char * reasonBuffer = data.constData() + sizeof(quint16);
+	int reasonLength = payloadLength - sizeof(quint16);
+
+	bool unicodeOk;
+	fromUtf8(reasonBuffer, reasonLength, &unicodeOk);
+
+	close(unicodeOk ? NormalClosure : DataInconsistent);
 }
 
 void QWsSocket::handleMessage()
@@ -223,7 +272,7 @@ void QWsSocket::handleMessage()
 	case OpReserved3:
 	case OpReserved4:
 	case OpReserved5:
-		close(); // TODO: Specify reason
+		close(ProtocolError);
 		break;
 	default:
 		qDebug("Unexpected non-control opcode 0x%x", messageOpcode);
@@ -232,6 +281,18 @@ void QWsSocket::handleMessage()
 
 	currentFrame.clear();
 	messageOpcode = OpContinue;
+}
+
+QString QWsSocket::fromUtf8(const char *str, int size, bool *ok)
+{
+	QTextCodec * codec = QTextCodec::codecForName("utf-8");
+	QTextCodec::ConverterState state;
+	QString result = codec->toUnicode(str, size, &state);
+
+	if (ok)
+		*ok = state.invalidChars == 0 && state.remainingChars == 0;
+
+	return result;
 }
 
 qint64 QWsSocket::write ( const QString & string, int maxFrameBytes )
@@ -267,19 +328,19 @@ qint64 QWsSocket::writeFrames ( QList<QByteArray> framesList )
 	return nbBytesWritten;
 }
 
-void QWsSocket::close( QString reason )
+void QWsSocket::close(quint16 status, const QString &reason)
 {
 	// Compose and send close frame
-	quint64 messageSize = reason.size();
-	QByteArray BA;
-	quint8 byte;
+	QByteArray reasonUtf = reason.toUtf8();
+	quint64 messageSize = reasonUtf.size() + sizeof(quint16);
 
-	QByteArray header = QWsSocket::composeHeader( true, OpClose, 0 );
-	BA.append( header );
+	uchar statusBuffer[sizeof(quint16)];
+	qToBigEndian<quint16>(status, statusBuffer);
 
-	// Reason // UNSUPPORTED FOR NOW
-	
-	tcpSocket->write( BA );
+	tcpSocket->write(QWsSocket::composeHeader(true, OpClose, messageSize));
+	tcpSocket->write(reinterpret_cast<const char *>(statusBuffer));
+	if (reasonUtf.size() > 0)
+		tcpSocket->write(reasonUtf);
 
 	tcpSocket->close();
 }

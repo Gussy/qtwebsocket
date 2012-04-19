@@ -31,6 +31,33 @@ public:
 		OpReserved10 = 0xF
 	};
 
+	enum StatusCode
+	{
+		NormalClosure = 1000,
+		GoingAway = 1001,
+		ProtocolError = 1002,
+		UnsupportedDataType = 1003,
+		ReservedStatus1004 = 1004,
+		ReservedStatus1005 = 1005,
+		ReservedStatus1006 = 1006,
+		DataInconsistent = 1007,
+		PolicyViolated = 1008,
+		MessageTooBig = 1009,
+		RequiredExtensionUnsupported = 1010, // Is not sent by server
+		InternalServerError = 1011, // Is not sent by client
+		ReservedStatus1012 = 1012,
+		ReservedStatus1013 = 1013,
+		ReservedStatus1014 = 1014,
+		ReservedStatus1015 = 1015,
+
+		StandardStatusReserveStart = 1000,
+		StandardStatusReserveEnd = 2999,
+		FrameworkStatusReserveStart = 3000,
+		FrameworkStatusReserveEnd = 3999,
+		VendorStatusReserveStart = 4000,
+		VendorStatusReserveEnd = 4999
+	};
+
 public:
 	// ctor
 	QWsSocket(QTcpSocket * socket = 0, QObject * parent = 0);
@@ -42,7 +69,7 @@ public:
 	qint64 write ( const QByteArray & byteArray, int maxFrameBytes = 0 ); // write data as binary
 
 public slots:
-	virtual void close( QString reason = QString() );
+	virtual void close(quint16 status = NormalClosure, const QString & reason = QString());
 	void ping();
 
 signals:
@@ -64,7 +91,10 @@ private slots:
 
 private:
 	void handleControlOpcode(const QByteArray & data);
+	void handleClose(const QByteArray & data);
 	void handleMessage();
+
+	static QString fromUtf8(const char * str, int size, bool *ok = 0);
 
 private:
 	enum EState
