@@ -102,3 +102,11 @@ Log.txt
 
 #Vim backup files: 
 *~
+
+*.o
+*.a
+moc_*.cpp
+Makefile
+Example/Server/Server
+Test/TestServer
+
