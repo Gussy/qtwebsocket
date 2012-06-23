@@ -156,7 +156,7 @@ void QWsSocket::dataReceived()
 		}
 		currentFrame.append( ApplicationData );
 
-		if (isFinalFragment)
+        if (isFinalFragment)
 			handleMessage();
 	};
 	break;
@@ -264,12 +264,12 @@ void QWsSocket::handleMessage()
 		// Handle UTF-8 errors as per http://tools.ietf.org/html/rfc6455#section-8.1,
 		// i.e. close socket with an 1007 error code,
 		// see http://tools.ietf.org/html/rfc6455#section-7.4.1
-		bool ok;
-		QString text = fromUtf8(currentFrame.constData(), currentFrame.size(), &ok);
-		if (ok)
-			emit frameReceived(text);
-		else
-			close(DataInconsistent);
+        bool ok = false;
+        QString text = fromUtf8(currentFrame.constData(), currentFrame.size(), &ok);
+        if (ok)
+            emit frameReceived(text);
+        else
+            close(DataInconsistent);
 	}; break;
 	case OpReserved1:
 	case OpReserved2:
@@ -289,14 +289,14 @@ void QWsSocket::handleMessage()
 
 QString QWsSocket::fromUtf8(const char *str, int size, bool *ok)
 {
-	QTextCodec * codec = QTextCodec::codecForName("utf-8");
-	QTextCodec::ConverterState state;
-	QString result = codec->toUnicode(str, size, &state);
+    QTextCodec * codec = QTextCodec::codecForName("utf-8");
+    QTextCodec::ConverterState state;
+    QString result = codec->toUnicode(str, size, &state);
 
-	if (ok)
-		*ok = state.invalidChars == 0 && state.remainingChars == 0;
+    if(state.invalidChars == 0 && state.remainingChars == 0)
+        *ok = true;
 
-	return result;
+    return result;
 }
 
 qint64 QWsSocket::write ( const QString & string, int maxFrameBytes )
@@ -304,7 +304,7 @@ qint64 QWsSocket::write ( const QString & string, int maxFrameBytes )
 	if ( maxFrameBytes == 0 )
 		maxFrameBytes = maxBytesPerFrame;
 
-	QList<QByteArray> framesList = QWsSocket::composeFrames( string.toUtf8(), false, maxFrameBytes );
+    QList<QByteArray> framesList = QWsSocket::composeFrames( string.toUtf8(), false, maxFrameBytes );
 	return writeFrames( framesList );
 }
 

@@ -94,7 +94,7 @@ private:
 	void handleClose(const QByteArray & data);
 	void handleMessage();
 
-	static QString fromUtf8(const char * str, int size, bool *ok = 0);
+    static QString fromUtf8(const char * str, int size, bool *ok = 0);
 
 private:
 	enum EState

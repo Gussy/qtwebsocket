@@ -42,11 +42,11 @@ void TestServer::onDataReceived(QString data)
 	QWsSocket * socket = qobject_cast<QWsSocket*>(sender());
 	if (socket == 0)
 		return;
-	
+
 	QWsSocket * client;
 	foreach (client, clients)
 	{
-		client->write(data);
+        client->write(data);
 	}
 }
 
@@ -59,7 +59,7 @@ void TestServer::onDataReceived(const QByteArray & data)
 	QWsSocket * client;
 	foreach (client, clients)
 	{
-		client->write(data);
+        client->write(data);
 	}
 }
 
