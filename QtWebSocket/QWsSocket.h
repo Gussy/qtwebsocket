@@ -58,23 +58,31 @@ public:
 		VendorStatusReserveEnd = 4999
 	};
 
+    typedef enum {
+        binary = 0,
+        text = 1
+    } MessageType;
+
+    typedef struct {
+        QByteArray data;
+        MessageType type;
+    } SocketMessage;
+
 public:
 	// ctor
 	QWsSocket(QTcpSocket * socket = 0, QObject * parent = 0);
 	// dtor
 	virtual ~QWsSocket();
 
-	// Public methods
-	qint64 write ( const QString & string, int maxFrameBytes = 0 ); // write data as text
-	qint64 write ( const QByteArray & byteArray, int maxFrameBytes = 0 ); // write data as binary
+    // Public methods
+    qint64 write ( const SocketMessage &message, int maxFrameBytes = 0 ) ;
 
 public slots:
 	virtual void close(quint16 status = NormalClosure, const QString & reason = QString());
 	void ping();
 
 signals:
-	void frameReceived(QString frame);
-	void frameReceived(QByteArray frame);
+    void frameReceived(QWsSocket::SocketMessage frame);
 	void pong(quint64 elapsedTime);
 
 protected:
@@ -90,11 +98,25 @@ private slots:
 	void tcpSocketDisconnected();
 
 private:
+    typedef struct {
+        quint8 working[6];
+        qint32 working_len;
+        qint32 unichars_so_far;
+        qint32 bytes_so_far;
+        qint32 expecting_continuation;
+    } DecoderState;
+
+private:
 	void handleControlOpcode(const QByteArray & data);
 	void handleClose(const QByteArray & data);
 	void handleMessage();
 
-    static QString fromUtf8(const char * str, int size, bool *ok = 0);
+    int validate(QByteArray a);
+    int validate_partial(QByteArray a);
+
+    DecoderState newDecoderState();
+    int process_byte(quint8 incoming, DecoderState *state, bool do_nothing = false);
+    int end_processing(DecoderState state);
 
 private:
 	enum EState
@@ -105,6 +127,16 @@ private:
 		MaskPending,
 		PayloadBodyPending
 	};
+
+    enum {
+        OK = 0,                         /* No error */
+        MISSING_CONTINUATION = 1,       /* A multibyte sequence without as many continuation bytes as expected.  e.g. [ef 81] 48 */
+        UNEXPECTED_CONTINUATION = 2,    /* A continuation byte when not expected */
+        OVERLONG_FORM = 3,              /* A full multibyte sequence encoding something that should have been encoded shorter */
+        OUT_OF_RANGE = 4,               /* A full multibyte sequence encoding something larger than 10FFFF */
+        BAD_SCALAR_VALUE = 5,           /* A full multibyte sequence encoding something in the range U+D800..U+DFFF */
+        INVALID = 6                     /* bytes 0xFE or 0xFF */
+    };
 
 private:
 	// private vars
@@ -119,6 +151,8 @@ private:
 	bool hasMask;
 	quint64 payloadLength;
 	QByteArray maskingKey;
+    SocketMessage message;
+
 public:
 	// Static functions
 	static QByteArray generateMaskingKey();

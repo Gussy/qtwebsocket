@@ -14,7 +14,7 @@ QWsSocket::QWsSocket(QTcpSocket * socket, QObject * parent) :
 	isFinalFragment(false),
 	hasMask(false),
 	payloadLength(0),
-	maskingKey(4, 0)
+    maskingKey(4, 0)
 {
 	//setSocketState( QAbstractSocket::UnconnectedState );
 	setSocketState( socket->state() );
@@ -23,6 +23,7 @@ QWsSocket::QWsSocket(QTcpSocket * socket, QObject * parent) :
 	// XXX: Consider connecting socket's signals to own signals directly
 	connect( tcpSocket, SIGNAL(disconnected()), this, SLOT(tcpSocketDisconnected()) );
 	connect( tcpSocket, SIGNAL(aboutToClose()), this, SLOT(tcpSocketAboutToClose()) );
+
 }
 
 QWsSocket::~QWsSocket()
@@ -145,7 +146,7 @@ void QWsSocket::dataReceived()
 		state = HeaderPending;
 
 		// Extension // UNSUPPORTED FOR NOW
-		QByteArray ApplicationData = tcpSocket->read( payloadLength );
+        QByteArray ApplicationData = tcpSocket->read( payloadLength );
 		if ( hasMask )
 			ApplicationData = QWsSocket::mask( ApplicationData, maskingKey );
 
@@ -155,6 +156,13 @@ void QWsSocket::dataReceived()
 			break;
 		}
 		currentFrame.append( ApplicationData );
+
+        // Fail-Fast on UTF-8 Errors
+        /*if(messageOpcode == OpText)
+        {
+            if(validate_partial(ApplicationData) != OK)
+                close(DataInconsistent);
+        }*/
 
         if (isFinalFragment)
 			handleMessage();
@@ -247,10 +255,8 @@ void QWsSocket::handleClose(const QByteArray &data)
 	const char * reasonBuffer = data.constData() + sizeof(quint16);
 	int reasonLength = payloadLength - sizeof(quint16);
 
-	bool unicodeOk;
-	fromUtf8(reasonBuffer, reasonLength, &unicodeOk);
-
-	close(unicodeOk ? NormalClosure : DataInconsistent);
+    int unicodeOk = validate(QByteArray(reasonBuffer, reasonLength));
+    close(unicodeOk == OK ? NormalClosure : DataInconsistent);
 }
 
 void QWsSocket::handleMessage()
@@ -258,19 +264,23 @@ void QWsSocket::handleMessage()
 	switch (messageOpcode)
 	{
 	case OpBinary:
-		emit frameReceived( currentFrame );
-		break;
-	case OpText: {
+        message.data = currentFrame;
+        message.type = binary;
+        emit frameReceived( message );
+	    break;
+    case OpText:
 		// Handle UTF-8 errors as per http://tools.ietf.org/html/rfc6455#section-8.1,
 		// i.e. close socket with an 1007 error code,
 		// see http://tools.ietf.org/html/rfc6455#section-7.4.1
-        bool ok = false;
-        QString text = fromUtf8(currentFrame.constData(), currentFrame.size(), &ok);
-        if (ok)
-            emit frameReceived(text);
+        if (validate(currentFrame) == OK)
+        {
+            message.data = currentFrame;
+            message.type = text;
+            emit frameReceived(message);
+        }
         else
             close(DataInconsistent);
-	}; break;
+        break;
 	case OpReserved1:
 	case OpReserved2:
 	case OpReserved3:
@@ -287,39 +297,22 @@ void QWsSocket::handleMessage()
 	messageOpcode = OpContinue;
 }
 
-QString QWsSocket::fromUtf8(const char *str, int size, bool *ok)
+qint64 QWsSocket::write ( const SocketMessage & message, int maxFrameBytes )
 {
-    QTextCodec * codec = QTextCodec::codecForName("utf-8");
-    QTextCodec::ConverterState state;
-    QString result = codec->toUnicode(str, size, &state);
+    if ( maxFrameBytes == 0 )
+        maxFrameBytes = maxBytesPerFrame;
 
-    if(state.invalidChars == 0 && state.remainingChars == 0)
-        *ok = true;
-
-    return result;
-}
-
-qint64 QWsSocket::write ( const QString & string, int maxFrameBytes )
-{
-	if ( maxFrameBytes == 0 )
-		maxFrameBytes = maxBytesPerFrame;
-
-    QList<QByteArray> framesList = QWsSocket::composeFrames( string.toUtf8(), false, maxFrameBytes );
-	return writeFrames( framesList );
-}
-
-qint64 QWsSocket::write ( const QByteArray & byteArray, int maxFrameBytes )
-{
-	if ( maxFrameBytes == 0 )
-		maxFrameBytes = maxBytesPerFrame;
-
-	QList<QByteArray> framesList = QWsSocket::composeFrames( byteArray, true, maxFrameBytes );
-	return writeFrames( framesList );
+    QList<QByteArray> framesList;
+    if(message.type == binary)
+        framesList = QWsSocket::composeFrames( message.data, true, maxFrameBytes );
+    else
+        framesList = QWsSocket::composeFrames( message.data, false, maxFrameBytes );
+    return writeFrames( framesList );
 }
 
 qint64 QWsSocket::writeFrame ( const QByteArray & byteArray )
 {
-	return tcpSocket->write( byteArray );
+    return tcpSocket->write( byteArray );
 }
 
 qint64 QWsSocket::writeFrames ( QList<QByteArray> framesList )
@@ -412,7 +405,7 @@ QList<QByteArray> QWsSocket::composeFrames( QByteArray byteArray, bool asBinary,
 			if ( asBinary )
 				opcode = OpBinary;
 			else
-				opcode = OpText;
+                opcode = OpText;
 		}
 		
 		// Header
@@ -421,8 +414,8 @@ QList<QByteArray> QWsSocket::composeFrames( QByteArray byteArray, bool asBinary,
 		
 		// Application Data
 		// TODO: Use QByteArray::mid() instead of left/remove for performance's sake
-		QByteArray dataForThisFrame = byteArray.left( size );
-		byteArray.remove( 0, size );
+        QByteArray dataForThisFrame = byteArray.left( size );
+        byteArray.remove( 0, size );
 		
 		BA.append( dataForThisFrame );
 		
@@ -513,4 +506,154 @@ QString QWsSocket::composeOpeningHandShake( QString ressourceName, QString host,
 	hs.append("Sec-WebSocket-Key: x3JJHMbDL1EzLkh9GBhXDw==\r\n");
 	hs.append("\r\n");
 	return hs;
+}
+
+int QWsSocket::validate(QByteArray a)
+{
+    quint8 bytes[a.size()];
+    int i, j, err, len = a.size();
+    for(i = 0; i < len; i++)
+    {
+        bytes[i] = a.at(i);
+    }
+
+    DecoderState state = newDecoderState();
+    for (j = 0; j < len; j++) {
+        err = process_byte(bytes[j], &state);
+        // Fail-Fast
+        if (err != OK)
+            return err;
+    }
+
+    // End processing
+    return process_byte(0x0, &state, true);
+}
+
+int QWsSocket::validate_partial(QByteArray a)
+{
+    quint8 bytes[a.size()];
+    int i, j, err, len = a.size();
+    for(i = 0; i < len; i++)
+    {
+        bytes[i] = a.at(i);
+    }
+
+    DecoderState state = newDecoderState();
+    for (j = 0; j < len; j++) {
+        err = process_byte(bytes[j], &state);
+        // Fail-Fast
+        if (err != OK)
+            return err;
+    }
+
+    return OK;
+}
+
+QWsSocket::DecoderState QWsSocket::newDecoderState()
+{
+    DecoderState state;
+    state.bytes_so_far = 0;
+    state.expecting_continuation = 0;
+    state.unichars_so_far = 0;
+    state.working_len = 0;
+    return state;
+}
+
+int QWsSocket::process_byte(quint8 incoming, DecoderState *state, bool do_nothing)
+{
+    int i, err = 0;
+    quint32 unichar;
+    quint8 *working = state->working;
+    if (state->expecting_continuation > 0) {
+        if ((incoming & 0xC0) != 0x80) { // not a continuation char
+            err = MISSING_CONTINUATION;
+            state->bytes_so_far += state->working_len;
+            state->working_len = 0;
+            state->expecting_continuation = 0;
+            process_byte(incoming, state); // reprocess
+            return err;
+        }
+        // else, got a continuation char
+        state->working[state->working_len] = incoming;
+        state->working_len++;
+        state->expecting_continuation--;
+        if (state->expecting_continuation == 0) { // finished the unichar
+            if (((working[0] & 0xFE) == 0xC0) ||
+                ((working[0] == 0xE0) && ((working[1] & 0x20) == 0x00)) ||
+                ((working[0] == 0xF0) && ((working[1] & 0x30) == 0x00)) ||
+                ((working[0] == 0xF8) && ((working[1] & 0x38) == 0x00)) ||
+                ((working[0] == 0xFC) && ((working[1] & 0x3C) == 0x00))) {
+                err = OVERLONG_FORM;
+                state->bytes_so_far += state->working_len;
+                state->working_len = 0;
+                state->expecting_continuation = 0;
+                return err;
+            }
+            unichar = 0;
+            if ((working[0] & 0xE0) == 0xC0) {
+                unichar = working[0] & 0x1F;
+            } else if ((working[0] & 0xF0) == 0xE0) {
+                unichar = working[0] & 0x0F;
+            } else if ((working[0] & 0xF8) == 0xF0) {
+                unichar = working[0] & 0x07;
+            } else {
+                unichar = 1; // will be OUT_OF_RANGE
+            }
+            for(i=1; i < state->working_len; i++) {
+                unichar <<= 6;
+                unichar += state->working[i] & 0x3F;
+            }
+            err = OK;
+            if (unichar > 0x10FFFF) {
+                err = OUT_OF_RANGE;
+            } else if ((unichar & 0xF800) == 0xD800) {
+                err = BAD_SCALAR_VALUE;
+            }
+            if (err != 0) {
+                state->bytes_so_far += state->working_len;
+                state->working_len = 0;
+                state->expecting_continuation = 0;
+            } else {
+                if(!do_nothing)
+                    state->unichars_so_far++;
+                state->bytes_so_far += state->working_len;
+                state->working_len = 0;
+                state->expecting_continuation = 0;
+            }
+        }
+        return err;
+    } // expecting_continuation
+
+    if ((incoming & 0x80) == 0) { // ASCII
+        state->working[0] = incoming;
+        if(!do_nothing)
+            state->unichars_so_far++;
+        state->bytes_so_far++;
+    } else if (((incoming & 0xC0) == 0x80) ||
+               ((incoming & 0xFE) == 0xFE)) { // continuation but unexpected, or 0xFE-0xFF
+        if ((incoming & 0xFE) == 0xFE) {
+          err = INVALID;
+        } else {
+          err = UNEXPECTED_CONTINUATION;
+        }
+        state->working[0] = incoming;
+        state->bytes_so_far++;
+        state->working_len = 0;
+        state->expecting_continuation = 0;
+    } else { // start of a multi-byte sequence
+        state->working[0] = incoming;
+        state->working_len = 1;
+        if ((incoming & 0xE0) == 0xC0) { // start of 2-char sequence
+            state->expecting_continuation = 1;
+        } else if ((incoming & 0xF0) == 0xE0) { // start of 3-char sequence
+            state->expecting_continuation = 2;
+        } else if ((incoming & 0xF8) == 0xF0) { // start of 4-char sequence
+            state->expecting_continuation = 3;
+        } else if ((incoming & 0xFC) == 0xF8) { // start of 5-char sequence -- will be OUT_OF_RANGE if complete
+            state->expecting_continuation = 4;
+        } else if ((incoming & 0xFE) == 0xFC) { // start of 6-char sequence -- will be OUT_OF_RANGE if complete
+            state->expecting_continuation = 5;
+        }
+    }
+    return err;
 }

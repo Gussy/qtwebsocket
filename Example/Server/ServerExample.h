@@ -17,7 +17,7 @@ public:
 
 public slots:
 	void onClientConnection();
-	void onDataReceived(QString data);
+    void onDataReceived(const QWsSocket::SocketMessage &message);
 	void onPong(quint64 elapsedTime);
 	void onClientDisconnection();
 

@@ -27,8 +27,7 @@ void TestServer::onClientConnection()
 {
 	QWsSocket * clientSocket = server->nextPendingConnection();
 
-	connect(clientSocket, SIGNAL(frameReceived(QString)), this, SLOT(onDataReceived(QString)));
-	connect(clientSocket, SIGNAL(frameReceived(QByteArray)), this, SLOT(onDataReceived(QByteArray)));
+    connect(clientSocket, SIGNAL(frameReceived(QWsSocket::SocketMessage)), this, SLOT(onDataReceived(QWsSocket::SocketMessage)));
 	connect(clientSocket, SIGNAL(disconnected()), this, SLOT(onClientDisconnection()));
 	connect(clientSocket, SIGNAL(pong(quint64)), this, SLOT(onPong(quint64)));
 
@@ -37,30 +36,17 @@ void TestServer::onClientConnection()
 	qDebug("Client connected");
 }
 
-void TestServer::onDataReceived(QString data)
+void TestServer::onDataReceived(const QWsSocket::SocketMessage &message)
 {
-	QWsSocket * socket = qobject_cast<QWsSocket*>(sender());
-	if (socket == 0)
-		return;
+    QWsSocket * socket = qobject_cast<QWsSocket*>(sender());
+    if (socket == 0)
+        return;
 
-	QWsSocket * client;
-	foreach (client, clients)
-	{
-        client->write(data);
-	}
-}
-
-void TestServer::onDataReceived(const QByteArray & data)
-{
-	QWsSocket * socket = qobject_cast<QWsSocket*>(sender());
-	if (socket == 0)
-		return;
-
-	QWsSocket * client;
-	foreach (client, clients)
-	{
-        client->write(data);
-	}
+    QWsSocket * client;
+    foreach (client, clients)
+    {
+        client->write(message);
+    }
 }
 
 void TestServer::onPong(quint64 elapsedTime)

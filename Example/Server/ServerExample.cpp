@@ -28,7 +28,7 @@ void ServerExample::onClientConnection()
 
 	QObject * clientObject = qobject_cast<QObject*>(clientSocket);
 
-	connect(clientObject, SIGNAL(frameReceived(QString)), this, SLOT(onDataReceived(QString)));
+    connect(clientObject, SIGNAL(frameReceived(QWsSocket::SocketMessage)), this, SLOT(onDataReceived(QWsSocket::SocketMessage)));
 	connect(clientObject, SIGNAL(disconnected()), this, SLOT(onClientDisconnection()));
 	connect(clientObject, SIGNAL(pong(quint64)), this, SLOT(onPong(quint64)));
 
@@ -37,18 +37,18 @@ void ServerExample::onClientConnection()
 	Log::display("Client connected");
 }
 
-void ServerExample::onDataReceived(QString data)
+void ServerExample::onDataReceived(const QWsSocket::SocketMessage &message)
 {
 	QWsSocket * socket = qobject_cast<QWsSocket*>( sender() );
 	if (socket == 0)
 		return;
 
-	Log::display( data );
+    Log::display( message.data.constData() );
 	
 	QWsSocket * client;
 	foreach ( client, clients )
 	{
-		client->write( data );
+        client->write( message );
 	}
 }
 

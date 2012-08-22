@@ -4,6 +4,7 @@
 #include <QObject>
 #include <QByteArray>
 #include <QList>
+#include "QWsSocket.h"
 
 class QWsServer;
 class QWsSocket;
@@ -18,8 +19,7 @@ public:
 
 public slots:
 	void onClientConnection();
-	void onDataReceived(QString data);
-	void onDataReceived(const QByteArray & data);
+    void onDataReceived(const QWsSocket::SocketMessage &message);
 	void onPong(quint64 elapsedTime);
 	void onClientDisconnection();
 
