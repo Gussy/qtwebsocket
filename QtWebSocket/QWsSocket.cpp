@@ -398,7 +398,7 @@ QList<QByteArray> QWsSocket::composeFrames( QByteArray byteArray, bool asBinary,
 		if ( i == nbFrames-1 ) // for multi-frames
 		{
 			fin = true;
-			size = byteArray.size();
+            size = byteArray.size() - (i*size);
 		}
 		if ( i == 0 )
 		{
@@ -412,12 +412,8 @@ QList<QByteArray> QWsSocket::composeFrames( QByteArray byteArray, bool asBinary,
 		QByteArray header = QWsSocket::composeHeader(fin, opcode, size);
 		BA.append( header );
 		
-		// Application Data
-		// TODO: Use QByteArray::mid() instead of left/remove for performance's sake
-        QByteArray dataForThisFrame = byteArray.left( size );
-        byteArray.remove( 0, size );
-		
-		BA.append( dataForThisFrame );
+		// Application Data	
+        BA.append(byteArray.mid(i*size, size));
 		
 		framesList << BA;
 	}
@@ -510,16 +506,11 @@ QString QWsSocket::composeOpeningHandShake( QString ressourceName, QString host,
 
 int QWsSocket::validate(QByteArray a)
 {
-    quint8 bytes[a.size()];
-    int i, j, err, len = a.size();
-    for(i = 0; i < len; i++)
-    {
-        bytes[i] = a.at(i);
-    }
-
+    qint64 err = 0;
     DecoderState state = newDecoderState();
-    for (j = 0; j < len; j++) {
-        err = process_byte(bytes[j], &state);
+    foreach(char byte, a) {
+        err = process_byte(byte, &state);
+
         // Fail-Fast
         if (err != OK)
             return err;
@@ -531,16 +522,11 @@ int QWsSocket::validate(QByteArray a)
 
 int QWsSocket::validate_partial(QByteArray a)
 {
-    quint8 bytes[a.size()];
-    int i, j, err, len = a.size();
-    for(i = 0; i < len; i++)
-    {
-        bytes[i] = a.at(i);
-    }
-
+    qint64 err = 0;
     DecoderState state = newDecoderState();
-    for (j = 0; j < len; j++) {
-        err = process_byte(bytes[j], &state);
+    foreach(char byte, a) {
+        err = process_byte(byte, &state);
+
         // Fail-Fast
         if (err != OK)
             return err;
